@@ -2,52 +2,86 @@ package main
 
 import (
 	"fmt"
+	"io"
+	"log"
+	"net/http"
 	"os"
 )
 
-func main() {
-	if len(os.Args) != 3 {
-		fmt.Println("Usage: go run . <input.jpg> <output.jpg>")
-		os.Exit(1)
+// removeGPSHandler handles multipart uploads and returns a JPEG with
+// GPS EXIF tags removed (or the original image if no GPS data was found).
+//
+// It expects a POST request with `Content-Type: multipart/form-data` and
+// a single file field named `image`. On success the response body contains
+// the JPEG bytes and the header `Content-Type: image/jpeg`.
+func removeGPSHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "only POST is allowed", http.StatusMethodNotAllowed)
+		return
 	}
 
-	inputPath := os.Args[1]
-	outputPath := os.Args[2]
+	// limit the size to something reasonable (e.g. 20MB)
+	if err := r.ParseMultipartForm(20 << 20); err != nil {
+		http.Error(w, "failed to parse multipart form", http.StatusBadRequest)
+		return
+	}
 
-	// Read the input image
-	imageData, err := os.ReadFile(inputPath)
+	file, _, err := r.FormFile("image")
 	if err != nil {
-		fmt.Printf("Error reading input file: %v\n", err)
-		os.Exit(1)
+		http.Error(w, "missing image file", http.StatusBadRequest)
+		return
+	}
+	defer file.Close()
+
+	// read image bytes so we can reuse the data for both processing and
+	// returning the original when no GPS removal is needed.
+	imgBytes, err := io.ReadAll(file)
+	if err != nil {
+		http.Error(w, "failed to read uploaded file", http.StatusBadRequest)
+		return
 	}
 
-	// Process the image
-	result := RemoveGPSFromJPEG(imageData)
-
-	// Handle errors
+	result := RemoveGPSFromJPEG(imgBytes)
 	if result.Error != nil {
-		fmt.Printf("Error processing image: %v\n", result.Error)
-		os.Exit(1)
+		msg := result.Error.Error()
+		if msg == "failed to parse JPEG: EOF" || msg == "failed to parse JPEG: unexpected EOF" {
+			http.Error(w, msg, http.StatusBadRequest)
+		} else {
+			http.Error(w, msg, http.StatusInternalServerError)
+		}
+		return
 	}
 
-	// Check results and decide what to write
-	var dataToWrite []byte
-	if result.GPSRemoved {
-		fmt.Println("✓ GPS data found and removed")
-		dataToWrite = result.ProcessedData
-	} else if !result.HasEXIF {
-		fmt.Println("ℹ No EXIF data found - saving original image")
-		dataToWrite = imageData
-	} else if !result.HasGPS {
-		fmt.Println("ℹ EXIF data found but no GPS coordinates - saving original image")
-		dataToWrite = imageData
+	// if GPS wasn't removed we don't need to echo the image back; the
+	// caller still has the original.  Use a 204/no-content response and
+	// include headers so the client can distinguish all the cases.  A
+	// separate `X-GPS-Removed` header is useful even when we send bytes so
+	// callers don't have to diff the payload.
+	if !result.GPSRemoved {
+		w.Header().Set("X-Has-EXIF", fmt.Sprintf("%t", result.HasEXIF))
+		w.Header().Set("X-Has-GPS", fmt.Sprintf("%t", result.HasGPS))
+		w.Header().Set("X-GPS-Removed", "false")
+		w.WriteHeader(http.StatusNoContent)
+		return
 	}
 
-	// Write output
-	if err := os.WriteFile(outputPath, dataToWrite, 0644); err != nil {
-		fmt.Printf("Error writing output file: %v\n", err)
-		os.Exit(1)
+	w.Header().Set("Content-Type", "image/jpeg")
+	w.Header().Set("X-GPS-Removed", "true")
+	w.Write(result.ProcessedData)
+}
+
+func main() {
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
 	}
 
-	fmt.Printf("✓ Image saved to: %s\n", outputPath)
+	http.HandleFunc("/remove-gps", removeGPSHandler)
+
+	log.Printf("starting server on :%s\n", port)
+	if err := http.ListenAndServe(
+		fmt.Sprintf(":%s", port), nil,
+	); err != nil {
+		log.Fatalf("server failed: %v", err)
+	}
 }

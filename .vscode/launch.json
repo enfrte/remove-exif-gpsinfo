@@ -11,12 +11,7 @@
 			"request": "launch",
 			"mode": "debug",
 			"program": "${workspaceFolder}",
-			"cwd": "${workspaceFolder}",
-			"args": [
-				"/home/leon/dev/remove-exif-gpsinfo/gps-img.jpg",
-				"/home/leon/dev/remove-exif-gpsinfo/new.jpg"
-			]
-
+			"cwd": "${workspaceFolder}"
 		}
 	]
 }
