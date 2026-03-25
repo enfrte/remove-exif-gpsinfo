@@ -1,0 +1,16 @@
+git
+.git
+.gitignore
+README.md
+.DS_Store
+*.md
+.vscode
+.idea
+*.test
+*.out
+vendor/
+.env
+.env.local
+docker-compose.yml
+Dockerfile
+.dockerignore
